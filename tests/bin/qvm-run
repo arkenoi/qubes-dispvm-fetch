@@ -1,0 +1,6 @@
+#!/bin/sh
+# stand-in: last argument is the command for the disposable
+for a; do cmd=$a; done
+echo "$@" | grep -q -- '--dispvm=' || { echo "fake qvm-run: no --dispvm" >&2; exit 2; }
+if [ -n "${EVIL:-}" ]; then exec python3 -I "$EVILPY" "$EVIL"; fi
+exec sh -c "$cmd" </dev/null
