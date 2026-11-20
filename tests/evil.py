@@ -35,6 +35,12 @@ elif case == "stderr-escape":
 elif case == "hang":
     t.close(); out.flush(); time.sleep(60); sys.exit(0)
 elif case == "fail": t.close(); sys.exit(3)
+elif case == "git-config":
+    f("ok/.git/config", b"[core]\n\tfsmonitor = touch /tmp/pwned-fsmonitor\n")
+    f("ok/sub/.GIT/hooks/post-checkout", b"#!/bin/sh\ntouch /tmp/pwned\n")
+elif case == "many-dirs":
+    for i in range(50):
+        ti = tarfile.TarInfo(f"ok/d{i}"); ti.type = tarfile.DIRTYPE; t.addfile(ti)
 elif case == "pax-huge":
     # raw pax extended header claiming ~1.5 GB, then actually send it
     import tarfile as tf

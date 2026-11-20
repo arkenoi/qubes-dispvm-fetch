@@ -129,9 +129,10 @@ class LimitedReader:
 
 
 # --------------------------------------------------------------- extraction
-def receive(stream, staging, max_bytes, max_files):
-    """Parse the tar stream from the disposable into `staging`. Returns (files, bytes, skipped)."""
-    files = total = 0
+def receive(stream, staging, max_bytes, max_files, keep_git=False):
+    """Parse the tar stream from the disposable into `staging`. Returns (files, bytes, skipped).
+    `max_files` limits every entry (files, directories, skipped links), not just files."""
+    files = total = entries = 0
     skipped = []
     # Stream mode ('r|'): sequential, no seeking; strict UTF-8 names.
     with tarfile.open(fileobj=stream, mode="r|", encoding="utf-8", errors="strict") as tar:
@@ -140,6 +141,14 @@ def receive(stream, staging, max_bytes, max_files):
             if not parts:
                 continue
             rel = "/".join(parts)
+            entries += 1
+            if entries > max_files:
+                raise Reject(f"more than {max_files} entries")
+            if not keep_git and any(p.lower() == ".git" for p in parts):
+                # enforced here, not trusted to the disposable: an untrusted .git/config
+                # can make later git commands in dom0 run arbitrary code
+                skipped.append(rel + "  [.git dropped]")
+                continue
             if m.issym() or m.islnk():
                 skipped.append(rel)                 # links are never created
                 continue
@@ -157,8 +166,6 @@ def receive(stream, staging, max_bytes, max_files):
                 continue
 
             files += 1
-            if files > max_files:
-                raise Reject(f"more than {max_files} files")
             if m.size < 0 or total + m.size > max_bytes:
                 raise Reject(f"payload exceeds {max_bytes} bytes")
             src = tar.extractfile(m)
@@ -202,7 +209,7 @@ def remote_script(url, mode, name, ref, keep_git, allow_http, max_bytes):
         fetch = (f"git {git_protos} -c core.symlinks=true clone --depth 1 --single-branch "
                  f"--no-tags {branch} -- {q(url)} out/{q(name)} >&2")
         if not keep_git:
-            fetch += f" && rm -rf out/{q(name)}/.git"
+            fetch += f"; rm -rf out/{q(name)}/.git"
     else:
         fetch = (f"curl --fail --location --silent --show-error --proto {q(protos_curl)} "
                  f"--proto-redir {q(protos_curl)} --max-filesize {int(max_bytes)} "
@@ -275,7 +282,7 @@ def main():
                     help="parent directory (default: %(default)s)")
     ap.add_argument("--sha256", help="expected SHA-256 of the downloaded file (--file only), checked in dom0")
     ap.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES, help="total size limit (default 2 GiB)")
-    ap.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES, help="file count limit (default 100000)")
+    ap.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES, help="limit on entries: files, directories and links (default 100000)")
     ap.add_argument("--timeout", type=int, default=1800, help="seconds before the disposable is killed (default 1800)")
     ap.add_argument("--allow-http", action="store_true", help="also allow plain http (default: https only)")
     ap.add_argument("--keep-git", action="store_true",
@@ -319,7 +326,7 @@ def main():
 
     staging = os.path.join(dest, f".incoming-{secrets.token_hex(6)}")
     os.mkdir(staging, 0o700)
-    cmd = ["qvm-run", f"--dispvm={dvm}", "--pass-io", "--no-gui",
+    cmd = ["qvm-run", f"--dispvm={dvm}", "--pass-io", "--no-gui", "--no-filter-escape-chars",
            remote_script(a.url, mode, name, a.ref, a.keep_git, a.allow_http, a.max_bytes)]
     info(f"fetching ({mode}) in a disposable from {dvm}: {safe(a.url)}")
 
@@ -359,7 +366,7 @@ def main():
         # tar overhead: 512-byte header per member plus padding; allow generous slack
         limit = a.max_bytes + 1024 * (a.max_files + 16) + 10 * 1024 * 1024
         reader = LimitedReader(proc.stdout, limit)
-        files, total, skipped = receive(reader, staging, a.max_bytes, a.max_files)
+        files, total, skipped = receive(reader, staging, a.max_bytes, a.max_files, a.keep_git)
         # after the end marker tar only pads (<= 10 KiB); anything more is refused
         trailing = 0
         while True:
@@ -398,7 +405,7 @@ def main():
         os.rename(staging, final)
         ok = True
         if skipped:
-            info(f"skipped {len(skipped)} symlink(s)/hardlink(s) (never created in dom0):")
+            info(f"skipped {len(skipped)} link(s)/.git entries (never created in dom0):")
             for s_ in skipped[:20]:
                 print("    " + safe(s_), file=sys.stderr)
             if len(skipped) > 20:

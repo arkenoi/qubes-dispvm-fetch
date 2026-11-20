@@ -11,6 +11,7 @@ check() {  # case expected-exit extra-args...
   [ "$want" = 1 ] && [ $rc -eq 0 ] && problems+=" expected-rejection"
   ls -d "$D"/.incoming-* >/dev/null 2>&1 && problems+=" staging-left-behind"
   for f in /tmp/abs-escape.txt "$T"/escaped.txt "$T"/escaped2.txt "$T"/pax-escape.txt "$D"/../escaped.txt; do [ -e "$f" ] && problems+=" ESCAPED:$f"; done
+  [ -n "$(find "$D" -iname .git)" ] && problems+=" .git-in-dest"
   [ -n "$(find "$D" -type l)" ] && problems+=" symlink-created"
   [ -n "$(find "$D" -type f -perm /7111)" ] && problems+=" exec-or-suid-bits"
   [ -n "$(find "$D" ! -type f ! -type d)" ] && problems+=" special-file"
@@ -39,4 +40,6 @@ check hang 1 --timeout 5
 check stderr-escape 0
 check stderr-flood 0
 check pax-huge 1
+check git-config 0
+check many-dirs 1 --max-files 10
 echo "passed=$pass failed=$fail"

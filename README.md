@@ -39,12 +39,14 @@ Run it as your normal dom0 user (it refuses to run as root).
    - accepts only regular files and directories; **symlinks and hardlinks are
      skipped** (listed, never created); device files and FIFOs reject the whole
      transfer;
+   - drops anything under a `.git` directory (any case), unless `--keep-git`.
+     This is enforced in dom0, not left to the disposable;
    - rejects absolute paths, `..`, empty or `.` components, names with control
      or Unicode format characters (terminal escapes, bidi overrides), names that
      are not valid UTF-8, overlong names and paths deeper than 64 levels;
    - rejects duplicate entries and a path used as both file and directory;
-   - enforces limits on total size (`--max-bytes`, default 2 GiB), file count
-     (`--max-files`, default 100 000), raw stream size, data after the end of the
+   - enforces limits on total size (`--max-bytes`, default 2 GiB), entry count
+     (`--max-files`, default 100 000: files, directories and links all count), raw stream size, data after the end of the
      archive (more than 1 MiB), and time (`--timeout`, default 30 min);
    - caps its own memory (768 MiB address space) so oversized pax/longname
      headers can't exhaust dom0 RAM.
@@ -71,17 +73,19 @@ Run it as your normal dom0 user (it refuses to run as root).
 | `--dispvm TEMPLATE` | disposable template to use |
 | `--name NAME` | name for the result (sanitised to `[A-Za-z0-9._-]`) |
 | `--dest DIR` | parent directory (default `~/QubesIncoming/dispvm-fetch`) |
-| `--max-bytes N`, `--max-files N`, `--timeout S` | limits |
+| `--max-bytes N`, `--max-files N`, `--timeout S` | limits (`--max-files` counts every entry) |
 | `--allow-http` | allow plain http (default: https only, also for redirects) |
 | `--keep-git` | keep `.git` (see below) |
 
 ## Things to know
 
-- **`.git` is removed by default.** An untrusted `.git/config` can set options
-  such as `core.fsmonitor` or `core.pager` that make any later `git status`,
-  `git log` and so on, run in that directory *in dom0*, execute arbitrary
-  commands. Use `--keep-git` only if you understand this; never run git in such
-  a directory in dom0.
+- **`.git` is dropped by default**, both in the disposable and again in dom0.
+  An untrusted `.git/config` can set options such as `core.fsmonitor` or
+  `core.pager` that make any later `git status`, `git log` and so on, run in
+  that directory *in dom0*, execute arbitrary commands.
+- **Never run git inside a received directory in dom0**, with or without
+  `--keep-git`: a directory laid out like a bare repository (`HEAD`, `objects/`,
+  `refs/`, `config`) is treated as one by git too. Copy files out instead.
 - **Exec bits are always dropped.** Scripts you fetched won't be executable
   until you `chmod` them yourself.
 - **Symlinks are not reproduced.** Repositories that rely on them will be
@@ -91,18 +95,19 @@ Run it as your normal dom0 user (it refuses to run as root).
 
 ## Tests
 
-`tests/run-tests.sh` runs 21 hostile-disposable cases without Qubes: a stand-in
+`tests/run-tests.sh` runs 23 hostile-disposable cases without Qubes: a stand-in
 `qvm-run` plays a malicious disposable that streams crafted archives (path
 traversal, absolute paths, pax path override, symlink-then-write, hardlink,
 device, FIFO, escape-sequence and bidi names, duplicates, file/dir clash,
 setuid, oversize, too many files, trailing garbage, failure exit, hang, stderr
-escape sequences, stderr flood, a 1.5 GB pax header). For each case it checks
+escape sequences, stderr flood, a 1.5 GB pax header, a planted `.git/config`
+with an `fsmonitor` command, 50 directories over an entry limit of 10). For each case it checks
 that nothing was written outside the destination, no staging directory is left,
-no symlink, special file, exec or setuid bit exists, and no raw escape sequence
-reached the terminal.
+no symlink, special file, `.git`, exec or setuid bit exists, and no raw escape
+sequence reached the terminal.
 
 ```
-tests/run-tests.sh      # passed=21 failed=0
+tests/run-tests.sh      # passed=23 failed=0
 ```
 
 **Not yet verified on a real dom0.** The disposable side was tested with
