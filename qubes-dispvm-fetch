@@ -4,7 +4,7 @@
 #
 # Run in dom0 as your normal user:
 #   qubes-dispvm-fetch https://example.org/file.tar.gz
-#   qubes-dispvm-fetch --git https://github.com/QubesOS/qubes-core-admin-client
+#   qubes-dispvm-fetch https://github.com/QubesOS/qubes-core-admin-client
 #
 # Trust model: everything coming out of the disposable is untrusted. dom0 never
 # runs a tar/git/archive tool on it. The disposable sends a tar stream; this
@@ -186,6 +186,16 @@ def receive(stream, staging, max_bytes, max_files, keep_git=False):
     return files, total, skipped
 
 
+def looks_like_html(path):
+    """True if a downloaded file is a web page (error page, repo browser, login wall...)."""
+    with open(path, "rb") as f:
+        head = f.read(4096)
+    head = head.lstrip(b"\xef\xbb\xbf").lstrip().lower()
+    if not head.startswith(b"<"):
+        return False
+    return any(tag in head for tag in (b"<!doctype html", b"<html", b"<head", b"<body"))
+
+
 def ensure_dir(path):
     try:
         st = os.lstat(path)
@@ -204,16 +214,23 @@ def remote_script(url, mode, name, ref, keep_git, allow_http, max_bytes):
     git_protos = "-c protocol.allow=never -c protocol.https.allow=always"
     if allow_http:
         git_protos += " -c protocol.http.allow=always"
-    if mode == "git":
-        branch = f"--branch {q(ref)}" if ref else ""
-        fetch = (f"git {git_protos} -c core.symlinks=true clone --depth 1 --single-branch "
+    branch = f"--branch {q(ref)}" if ref else ""
+    git_fetch = (f"git {git_protos} -c core.symlinks=true clone --depth 1 --single-branch "
                  f"--no-tags {branch} -- {q(url)} out/{q(name)} >&2")
-        if not keep_git:
-            fetch += f"; rm -rf out/{q(name)}/.git"
+    if not keep_git:
+        git_fetch += f"; rm -rf out/{q(name)}/.git"
+    file_fetch = (f"curl --fail --location --silent --show-error --proto {q(protos_curl)} "
+                  f"--proto-redir {q(protos_curl)} --max-filesize {int(max_bytes)} "
+                  f"--retry 2 --connect-timeout 30 -o out/{q(name)} -- {q(url)} >&2")
+    if mode == "git":
+        fetch = git_fetch
+    elif mode == "file":
+        fetch = file_fetch
     else:
-        fetch = (f"curl --fail --location --silent --show-error --proto {q(protos_curl)} "
-                 f"--proto-redir {q(protos_curl)} --max-filesize {int(max_bytes)} "
-                 f"--retry 2 --connect-timeout 30 -o out/{q(name)} -- {q(url)} >&2")
+        # auto: a URL that answers the git protocol is cloned, anything else downloaded
+        fetch = (f"if timeout 120 git {git_protos} ls-remote -- {q(url)} >/dev/null 2>&1; then "
+                 f"echo 'git repository detected, cloning' >&2; {git_fetch}; else "
+                 f"echo 'not a git repository, downloading as a file' >&2; {file_fetch}; fi")
     return (
         "set -eu; umask 022; "
         "export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false LC_ALL=C; "
@@ -273,8 +290,9 @@ def main():
                     "into dom0 ~/QubesIncoming/dispvm-fetch/.")
     ap.add_argument("url")
     kind = ap.add_mutually_exclusive_group()
-    kind.add_argument("--git", action="store_true", help="git clone (default when URL ends in .git)")
-    kind.add_argument("--file", action="store_true", help="plain download with curl")
+    kind.add_argument("--git", action="store_true",
+                      help="git clone (default: auto-detected, the disposable asks the URL for git refs first)")
+    kind.add_argument("--file", action="store_true", help="plain download with curl, no git detection")
     ap.add_argument("--ref", help="git branch or tag to clone")
     ap.add_argument("--dispvm", metavar="TEMPLATE", help="disposable template (default: qubes-prefs default_dispvm)")
     ap.add_argument("--name", help="name for the result (default: derived from the URL)")
@@ -300,16 +318,21 @@ def main():
         die(f"URL must be {' or '.join(sorted(allowed))}: {safe(a.url)}")
     if any(unicodedata.category(c).startswith("C") or c.isspace() for c in a.url):
         die("URL contains whitespace or control characters")
-    mode = "git" if a.git or (not a.file and u.path.rstrip("/").endswith(".git")) else "file"
+    if a.git or (not a.file and u.path.rstrip("/").endswith(".git")):
+        mode = "git"
+    elif a.file or a.sha256:
+        mode = "file"
+    else:
+        mode = "auto"
     if a.sha256 and mode != "file":
-        die("--sha256 only applies to --file downloads")
+        die("--sha256 only applies to file downloads")
     if a.sha256 and not re.fullmatch(r"[0-9a-fA-F]{64}", a.sha256):
         die("--sha256 must be 64 hex characters")
-    if a.keep_git and mode != "git":
-        die("--keep-git only applies to --git")
+    if a.keep_git and mode == "file":
+        die("--keep-git does not apply to file downloads")
 
     base = os.path.basename(u.path.rstrip("/"))
-    if mode == "git" and base.endswith(".git"):
+    if mode != "file" and base.endswith(".git"):
         base = base[:-4]
     name = slug(a.name or base or u.netloc)
 
@@ -384,6 +407,10 @@ def main():
             raise Reject(f"fetch failed in the disposable (exit {rc})")
         if files == 0:
             raise Reject("nothing was received")
+        top = os.path.join(staging, name)
+        if os.path.isfile(top) and not os.path.islink(top) and looks_like_html(top):
+            raise Reject("the server returned an HTML page, not a file or a git repository "
+                         "(use the direct download link, or --git if it is a repository)")
 
         if a.sha256:
             path = os.path.join(staging, name)

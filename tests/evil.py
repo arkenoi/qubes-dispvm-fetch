@@ -34,6 +34,8 @@ elif case == "stderr-escape":
     sys.stderr.write("\x1b]0;pwned-title\x07\x1b[2J evil stderr\n")
 elif case == "hang":
     t.close(); out.flush(); time.sleep(60); sys.exit(0)
+elif case == "html": f("x.tar", b"\xef\xbb\xbf\n  <!DOCTYPE html>\n<html><body>GitHub</body></html>")
+elif case == "html-in-repo": f("ok/index.html", b"<!doctype html><html></html>")
 elif case == "fail": t.close(); sys.exit(3)
 elif case == "git-config":
     f("ok/.git/config", b"[core]\n\tfsmonitor = touch /tmp/pwned-fsmonitor\n")

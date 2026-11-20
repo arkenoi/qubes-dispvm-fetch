@@ -41,5 +41,7 @@ check stderr-escape 0
 check stderr-flood 0
 check pax-huge 1
 check git-config 0
+check html 1
+check html-in-repo 0
 check many-dirs 1 --max-files 10
 echo "passed=$pass failed=$fail"

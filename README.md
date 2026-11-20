@@ -9,8 +9,14 @@ One self-contained Python 3 file, no dependencies beyond what Qubes dom0 ships.
 ```
 qubes-dispvm-fetch https://example.org/release.tar.gz --sha256 <hex>
 qubes-dispvm-fetch https://github.com/QubesOS/qubes-core-admin-client.git
-qubes-dispvm-fetch --git --ref v4.3.0 https://github.com/QubesOS/qubes-core-admin-client
+qubes-dispvm-fetch --ref v4.3.0 https://github.com/QubesOS/qubes-core-admin-client
 ```
+
+Git repositories are detected automatically: the disposable first asks the URL
+for git refs (`git ls-remote`). If the URL answers, it's cloned; otherwise it's
+downloaded as a file. **A download that turns out to be an HTML page (a repo
+browser page, error page, login wall) is always rejected**, so you never get a
+web page instead of what you asked for.
 
 On success it prints the path of the new directory, e.g.
 `~/QubesIncoming/dispvm-fetch/20261120-194438-qubes-core-admin-client/`.
@@ -31,8 +37,8 @@ Run it as your normal dom0 user (it refuses to run as root).
 ## How it works
 
 1. `qvm-run --dispvm=<template> --pass-io --no-gui` starts a fresh disposable
-   (default: `qubes-prefs default_dispvm`). Inside it, `curl` or `git clone
-   --depth 1` fetches the URL into a temp dir on disk, and the result is sent
+   (default: `qubes-prefs default_dispvm`). Inside it, `git clone --depth 1`
+   (if the URL speaks git) or `curl` fetches the URL into a temp dir on disk, and the result is sent
    back to dom0 as a tar stream on stdout.
 2. dom0 never runs `tar`, `git` or any archive tool on that stream. The script
    parses it itself and, before writing anything:
@@ -48,6 +54,7 @@ Run it as your normal dom0 user (it refuses to run as root).
    - enforces limits on total size (`--max-bytes`, default 2 GiB), entry count
      (`--max-files`, default 100 000: files, directories and links all count), raw stream size, data after the end of the
      archive (more than 1 MiB), and time (`--timeout`, default 30 min);
+   - rejects a single downloaded file that is an HTML page;
    - caps its own memory (768 MiB address space) so oversized pax/longname
      headers can't exhaust dom0 RAM.
 3. Files are created fresh with `O_EXCL | O_NOFOLLOW`, mode `0644`
@@ -67,7 +74,7 @@ Run it as your normal dom0 user (it refuses to run as root).
 
 | Option | Meaning |
 |---|---|
-| `--git` / `--file` | force git clone or plain download (default: git if the URL ends in `.git`) |
+| `--git` / `--file` | force git clone or plain download (default: auto-detect; `--sha256` implies `--file`) |
 | `--ref REF` | git branch or tag |
 | `--sha256 HEX` | expected hash of a `--file` download, verified **in dom0** |
 | `--dispvm TEMPLATE` | disposable template to use |
@@ -95,19 +102,20 @@ Run it as your normal dom0 user (it refuses to run as root).
 
 ## Tests
 
-`tests/run-tests.sh` runs 23 hostile-disposable cases without Qubes: a stand-in
+`tests/run-tests.sh` runs 25 hostile-disposable cases without Qubes: a stand-in
 `qvm-run` plays a malicious disposable that streams crafted archives (path
 traversal, absolute paths, pax path override, symlink-then-write, hardlink,
 device, FIFO, escape-sequence and bidi names, duplicates, file/dir clash,
 setuid, oversize, too many files, trailing garbage, failure exit, hang, stderr
 escape sequences, stderr flood, a 1.5 GB pax header, a planted `.git/config`
-with an `fsmonitor` command, 50 directories over an entry limit of 10). For each case it checks
+with an `fsmonitor` command, 50 directories over an entry limit of 10, an HTML page instead of a file,
+an HTML file inside a repository, which is accepted). For each case it checks
 that nothing was written outside the destination, no staging directory is left,
 no symlink, special file, `.git`, exec or setuid bit exists, and no raw escape
 sequence reached the terminal.
 
 ```
-tests/run-tests.sh      # passed=23 failed=0
+tests/run-tests.sh      # passed=25 failed=0
 ```
 
 **Not yet verified on a real dom0.** The disposable side was tested with
