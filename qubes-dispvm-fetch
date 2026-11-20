@@ -34,7 +34,7 @@ import time
 import unicodedata
 import urllib.parse
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 DEFAULT_MAX_BYTES = 2 * 1024**3        # total payload
 DEFAULT_MAX_FILES = 100_000
@@ -222,15 +222,19 @@ def remote_script(url, mode, name, ref, keep_git, allow_http, max_bytes):
     file_fetch = (f"curl --fail --location --silent --show-error --proto {q(protos_curl)} "
                   f"--proto-redir {q(protos_curl)} --max-filesize {int(max_bytes)} "
                   f"--retry 2 --connect-timeout 30 -o out/{q(name)} -- {q(url)} >&2")
+    no_git = ("echo 'git is NOT installed in this disposable template, so git repositories "
+              "cannot be cloned or detected (install git in the template)' >&2")
     if mode == "git":
-        fetch = git_fetch
+        fetch = f"if ! command -v git >/dev/null 2>&1; then {no_git}; exit 127; fi; {git_fetch}"
     elif mode == "file":
         fetch = file_fetch
     else:
         # auto: a URL that answers the git protocol is cloned, anything else downloaded
-        fetch = (f"if timeout 120 git {git_protos} ls-remote -- {q(url)} >/dev/null 2>&1; then "
+        fetch = (f"if ! command -v git >/dev/null 2>&1; then {no_git}; {file_fetch}; "
+                 f"elif timeout 120 git {git_protos} ls-remote -- {q(url)} >/dev/null 2>\"$W/probe\"; then "
                  f"echo 'git repository detected, cloning' >&2; {git_fetch}; else "
-                 f"echo 'not a git repository, downloading as a file' >&2; {file_fetch}; fi")
+                 f"echo 'not a git repository (git said:)' >&2; head -c 2000 \"$W/probe\" | head -n 3 >&2; "
+                 f"echo 'downloading as a file' >&2; {file_fetch}; fi")
     return (
         "set -eu; umask 022; "
         "export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false LC_ALL=C; "
@@ -410,7 +414,7 @@ def main():
         top = os.path.join(staging, name)
         if os.path.isfile(top) and not os.path.islink(top) and looks_like_html(top):
             raise Reject("the server returned an HTML page, not a file or a git repository "
-                         "(use the direct download link, or --git if it is a repository)")
+                         "(see the [dispvm] lines above; use a direct download link, or --git for a repository)")
 
         if a.sha256:
             path = os.path.join(staging, name)
