@@ -34,7 +34,7 @@ import time
 import unicodedata
 import urllib.parse
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 
 DEFAULT_MAX_BYTES = 2 * 1024**3        # total payload
 DEFAULT_MAX_FILES = 100_000
@@ -230,11 +230,13 @@ def remote_script(url, mode, name, ref, keep_git, allow_http, max_bytes):
         fetch = file_fetch
     else:
         # auto: a URL that answers the git protocol is cloned, anything else downloaded
-        fetch = (f"if ! command -v git >/dev/null 2>&1; then {no_git}; {file_fetch}; "
-                 f"elif timeout 120 git {git_protos} ls-remote -- {q(url)} >/dev/null 2>\"$W/probe\"; then "
-                 f"echo 'git repository detected, cloning' >&2; {git_fetch}; else "
-                 f"echo 'not a git repository (git said:)' >&2; head -c 2000 \"$W/probe\" | head -n 3 >&2; "
-                 f"echo 'downloading as a file' >&2; {file_fetch}; fi")
+        fetch = (f"if ! command -v git >/dev/null 2>&1; then {no_git}; {file_fetch}; else "
+                 f"rc=0; timeout 120 git {git_protos} ls-remote -- {q(url)} >/dev/null 2>\"$W/probe\" || rc=$?; "
+                 f"if [ $rc = 0 ]; then echo 'git repository detected, cloning' >&2; {git_fetch}; else "
+                 f"if [ $rc = 124 ]; then echo 'git probe timed out after 120s' >&2; "
+                 f"else echo \"git probe failed (exit $rc), not a git repository?\" >&2; fi; "
+                 f"head -c 2000 \"$W/probe\" | head -n 3 >&2; "
+                 f"echo 'downloading as a file' >&2; {file_fetch}; fi; fi")
     return (
         "set -eu; umask 022; "
         "export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false LC_ALL=C; "
